@@ -39,7 +39,7 @@ public:
     void Load()
     {
         Enabled = sConfigMgr->GetOption<bool>("PetLoot.Enable", true);
-        PetId = sConfigMgr->GetOption<uint32>("PetLoot.PetId", 23234); // Default: Bananas
+        PetId = sConfigMgr->GetOption<uint32>("PetLoot.PetId", 0); // 0 = any non-combat pet
         Radius = sConfigMgr->GetOption<float>("PetLoot.Radius", 50.0f);
     }
 };
@@ -258,13 +258,18 @@ private:
         if (!player || !victim)
             return;
 
-        // Check if the player has the required vanity pet (Bananas) summoned
+        // Check if the player has a non-combat pet summoned
         ObjectGuid critterGuid = player->GetCritterGUID();
         if (critterGuid.IsEmpty())
             return;
 
         Creature* critter = ObjectAccessor::GetCreature(*player, critterGuid);
-        if (!critter || critter->GetEntry() != PetLootConfig::instance()->PetId)
+        if (!critter)
+            return;
+
+        // PetId 0 lets any non-combat pet loot; otherwise only that entry
+        uint32 petId = PetLootConfig::instance()->PetId;
+        if (petId && critter->GetEntry() != petId)
             return;
 
         // Distance check between player and victim
