@@ -17,11 +17,12 @@ PetLoot.Enable = 1
 
 #
 #    PetLoot.PetId
-#        Description: The Entry ID of the NPC mascot (Vanity Pet) that will perform the looting.
-#                     23234 is "Bananas" (TCG Monkey Pet).
-#        Default:     23234
+#        Description: The Entry ID of the non-combat (vanity) pet that will perform the looting.
+#                     Set to 0 to let any summoned non-combat pet loot.
+#                     Example: 23234 is "Bananas" (TCG Monkey Pet).
+#        Default:     0 - (Any non-combat pet)
 
-PetLoot.PetId = 23234
+PetLoot.PetId = 0
 
 #
 #    PetLoot.Radius

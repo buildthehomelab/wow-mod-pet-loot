@@ -1,12 +1,12 @@
-# Module: Pet Loot (Bananas)
+# Module: Pet Loot
 
 <p align="center">
-  <img src="icon.png" alt="Pet Loot (Bananas)" width="246" height="246">
+  <img src="icon.png" alt="Pet Loot" width="246" height="246">
 </p>
 
 This is a module for [AzerothCore](https://www.azerothcore.org).
 
-It allows the vanity pet **Bananas** (ID 23234) to act as an immersive auto-loot assistant for the player.
+It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assistant for the player. It can also be limited to a single pet, such as **Bananas** (ID 23234).
 
 ## Features
 - **Visual Movement**: The pet physically runs to the location of the killed creature before looting.
@@ -20,7 +20,7 @@ It allows the vanity pet **Bananas** (ID 23234) to act as an immersive auto-loot
 
 ## Requirements
 - AzerothCore (latest version)
-- A player with the pet **Bananas** (Entry 23234) summoned.
+- A player with a non-combat pet summoned (or the pet set in `PetLoot.PetId`).
 
 ## Installation
 1. Place the `mod-pet-loot` directory into your `modules/` folder.
@@ -31,7 +31,7 @@ It allows the vanity pet **Bananas** (ID 23234) to act as an immersive auto-loot
 
 ## Configuration
 - `PetLoot.Enable`: Enable/Disable the module.
-- `PetLoot.PetId`: The NPC ID of the looting pet (default: 23234).
+- `PetLoot.PetId`: The NPC ID of the looting pet. `0` lets any non-combat pet loot (default: 0).
 - `PetLoot.Radius`: Maximum distance for looting (default: 50.0 yards).
 
 ## License
