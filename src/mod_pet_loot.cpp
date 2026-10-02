@@ -250,14 +250,36 @@ public:
     }
 
 private:
-    void ProcessPetLoot(Player* player, Creature* victim)
+    // The killer is often a party member (in dungeons usually a bot), so
+    // check every group member's pet, not just the killer's.
+    void ProcessPetLoot(Player* killer, Creature* victim)
     {
         if (!PetLootConfig::instance()->Enabled)
             return;
 
-        if (!player || !victim)
+        if (!killer || !victim)
             return;
 
+        Group* group = killer->GetGroup();
+        if (!group)
+        {
+            if (victim->GetLootRecipient() == killer)
+                TrySendPet(killer, victim);
+            return;
+        }
+
+        // Only the group that tapped the creature may loot it
+        if (victim->GetLootRecipientGroup() != group)
+            return;
+
+        for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
+            if (Player* member = itr->GetSource())
+                if (member->IsInMap(victim))
+                    TrySendPet(member, victim);
+    }
+
+    void TrySendPet(Player* player, Creature* victim)
+    {
         // Check if the player has a non-combat pet summoned
         ObjectGuid critterGuid = player->GetCritterGUID();
         if (critterGuid.IsEmpty())
