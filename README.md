@@ -12,6 +12,7 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - **Visual Movement**: The pet physically runs to the location of the killed creature before looting.
 - **Looting Animation**: Upon reaching the corpse, the pet plays a "Loot" animation (emote) for immersion.
 - **Auto-Loot**: Items and gold are automatically handled using AzerothCore native loot systems, including inventory validation, quest requirements, unique item checks, group loot rules, and gold sharing.
+- **Party Kills**: The pet loots whatever your group kills, not only your own killing blows, so it works in dungeons where party members (or bots) land most kills.
 - **Distance Check**: The pet only loots if the player is within a configurable distance from the corpse (default: 50 yards).
 - **Stability**: Uses `Player::StoreLootItem` to ensure compatibility with unique items, bag space, and quest requirements.
 - **Group Loot Support**: Fully respects AzerothCore group loot rules (Free For All, Group Loot, Need Before Greed, Master Loot, Round-Robin). The pet automatically triggers the appropriate loot system exactly once, shares gold correctly between nearby group members, and leaves active loot rolls and master-loot distributions fully managed by the core.
