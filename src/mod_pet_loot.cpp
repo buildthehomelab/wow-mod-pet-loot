@@ -15,7 +15,6 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 
-#include <set>
 #include <vector>
 
 // Configuration class to store module settings
@@ -31,10 +30,6 @@ public:
     bool Enabled;
     uint32 PetId;
     float Radius;
-
-    // Prevents the pet from starting group loot rolls multiple times
-    // for the same creature corpse.
-    std::set<ObjectGuid> GroupLootStarted;
 
     void Load()
     {
@@ -68,55 +63,41 @@ public:
 
         pet->HandleEmoteCommand(EMOTE_ONESHOT_LOOT);
 
-        // Fill loot if empty
-        if (victim->loot.items.empty() && victim->loot.gold == 0 && victim->loot.quest_items.empty())
-        {
-            if (auto cTemplate = victim->GetCreatureTemplate())
-            {
-                // Some creatures have no loot table.
-                // Avoid calling FillLoot with lootid 0 to prevent console errors.
-                if (cTemplate->lootid)
-                {
-                    bool personal = (player->GetGroup() == nullptr);
-                    victim->loot.FillLoot(cTemplate->lootid, LootTemplates_Creature, player, personal);
-                }
-            }
-        }
+        // The core fills corpse loot when the creature dies. Empty loot means
+        // nothing dropped or it was already taken; refilling it here would
+        // roll the loot table again and create extra drops.
 
-        // Mark corpse loot as already initialized.
-        // This must be done even if FillLoot was not called,
+        // Someone (usually a bot) may have opened the corpse before the pet
+        // got there; the core then already started the group rolls.
+        bool lootInitialized = victim->loot.loot_type != LOOT_NONE;
+
+        // Mark corpse loot as already initialized,
         // otherwise manual looting will start group rolls again.
         victim->loot.loot_type = LOOT_CORPSE;
 
         Group* group = player->GetGroup();
         LootMethod lootMethod = group ? group->GetLootMethod() : FREE_FOR_ALL;
 
-        // Trigger group loot system once.
-        if (group && lootMethod != FREE_FOR_ALL)
+        // Trigger group loot system once. Starting it a second time would
+        // roll every item again and hand out a duplicate of each.
+        if (group && lootMethod != FREE_FOR_ALL && !lootInitialized)
         {
-            auto& startedLoots = PetLootConfig::instance()->GroupLootStarted;
-
-            if (!startedLoots.count(victim->GetGUID()))
+            switch (lootMethod)
             {
-                switch (lootMethod)
-                {
-                    case GROUP_LOOT:
-                        group->GroupLoot(&victim->loot, victim);
-                        break;
+                case GROUP_LOOT:
+                    group->GroupLoot(&victim->loot, victim);
+                    break;
 
-                    case NEED_BEFORE_GREED:
-                        group->NeedBeforeGreed(&victim->loot, victim);
-                        break;
+                case NEED_BEFORE_GREED:
+                    group->NeedBeforeGreed(&victim->loot, victim);
+                    break;
 
-                    case MASTER_LOOT:
-                        group->MasterLoot(&victim->loot, victim);
-                        break;
+                case MASTER_LOOT:
+                    group->MasterLoot(&victim->loot, victim);
+                    break;
 
-                    default:
-                        break;
-                }
-
-                startedLoots.insert(victim->GetGUID());
+                default:
+                    break;
             }
         }
 
@@ -205,8 +186,6 @@ public:
         // Cleanup corpse visual and decay if empty
         if (victim->loot.isLooted())
         {
-            PetLootConfig::instance()->GroupLootStarted.erase(victim->GetGUID());
-
             victim->RemoveFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE);
             victim->AllLootRemovedFromCorpse();
         }
