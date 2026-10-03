@@ -189,6 +189,13 @@ public:
             victim->RemoveFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE);
             victim->AllLootRemovedFromCorpse();
         }
+        else
+        {
+            // The sparkle is worked out per player but only sent when the
+            // flag changes. Resend it so players with nothing left to take
+            // (the rest is rolling or belongs to someone else) lose it.
+            victim->ForceValuesUpdateAtIndex(UNIT_DYNAMIC_FLAGS);
+        }
 
         // Pet returns to player
         pet->GetMotionMaster()->MoveFollow(player, 1.0f, 0.0f);
@@ -226,6 +233,27 @@ public:
     void OnPlayerCreatureKilledByPet(Player* petOwner, Creature* victim) override
     {
         ProcessPetLoot(petOwner, victim);
+    }
+
+    // The core hands out a won roll straight from the corpse but only clears
+    // the sparkle for chests. Normally someone opens the empty corpse and
+    // that clears it; with the pet looting nobody does, so the corpse keeps
+    // sparkling with nothing inside.
+    void OnPlayerGroupRollRewardItem(Player* player, Item* /*item*/, uint32 /*count*/, RollVote /*voteType*/, Roll* roll) override
+    {
+        if (!PetLootConfig::instance()->Enabled || !player || !roll)
+            return;
+
+        Loot* loot = roll->getLoot();
+        if (!loot || !loot->isLooted() || loot->sourceGameObject || !loot->sourceWorldObjectGUID.IsCreature())
+            return;
+
+        Creature* creature = player->GetMap()->GetCreature(loot->sourceWorldObjectGUID);
+        if (!creature || creature->IsAlive() || !creature->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
+            return;
+
+        creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+        creature->AllLootRemovedFromCorpse();
     }
 
 private:
