@@ -13,6 +13,7 @@
 #include "Map.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
+#include "Timer.h"
 #include "WorldSession.h"
 
 #include <vector>
@@ -38,6 +39,92 @@ public:
         Radius = sConfigMgr->GetOption<float>("PetLoot.Radius", 50.0f);
     }
 };
+
+// True while an item on the corpse waits on a group roll or the master looter
+static bool HasRollingItem(Loot const& loot)
+{
+    for (LootItem const& item : loot.items)
+        if (item.is_blocked && !item.is_looted)
+            return true;
+
+    for (LootItem const& item : loot.quest_items)
+        if (item.is_blocked && !item.is_looted)
+            return true;
+
+    return false;
+}
+
+// Marks a corpse that already has a CorpseSparkleCheckEvent queued
+struct SparkleCheckPending : DataMap::Base
+{
+    uint32 Until = 0;
+};
+
+// The core never re-sends a corpse's sparkle when a group roll ends (it
+// only deactivates chests), and none of its roll hooks fire for disenchant
+// or mailed wins. Whoever opened the corpse released it while the items
+// were still rolling, so it keeps sparkling, even empty, until someone
+// opens it again. Watch the corpse until the rolls finish, then do what
+// releasing the loot would have done.
+class CorpseSparkleCheckEvent : public BasicEvent
+{
+public:
+    static constexpr uint32 CheckIntervalMs = 1000;
+    static constexpr uint32 MaxChecks = 90; // rolls time out after 60s
+
+    explicit CorpseSparkleCheckEvent(Creature* creature) : _creature(creature) { }
+
+    bool Execute(uint64 /*e_time*/, uint32 /*p_time*/) override
+    {
+        if (_creature->IsAlive() || !_creature->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
+            return Finish();
+
+        Loot& loot = _creature->loot;
+        if (loot.isLooted())
+        {
+            _creature->AllLootRemovedFromCorpse();
+            _creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
+            loot.clear();
+            return Finish();
+        }
+
+        if (HasRollingItem(loot) && ++_checks < MaxChecks)
+        {
+            _creature->m_Events.AddEvent(this, _creature->m_Events.CalculateTime(CheckIntervalMs));
+            return false;
+        }
+
+        // Something is left, maybe only for some players. The sparkle is
+        // worked out per player, so resend it.
+        _creature->ForceValuesUpdateAtIndex(UNIT_DYNAMIC_FLAGS);
+        return Finish();
+    }
+
+private:
+    bool Finish()
+    {
+        _creature->CustomData.GetDefault<SparkleCheckPending>("PetLootSparkleCheck")->Until = 0;
+        return true;
+    }
+
+    Creature* _creature;
+    uint32 _checks = 0;
+};
+
+static void ScheduleSparkleCheck(Creature* creature)
+{
+    constexpr uint32 watchMs = CorpseSparkleCheckEvent::MaxChecks * CorpseSparkleCheckEvent::CheckIntervalMs;
+
+    // Until is a deadline rather than a flag, so it lapses on its own if
+    // the event gets dropped without running
+    SparkleCheckPending* pending = creature->CustomData.GetDefault<SparkleCheckPending>("PetLootSparkleCheck");
+    uint32 now = getMSTime();
+    if (pending->Until && getMSTimeDiff(now, pending->Until) <= watchMs)
+        return;
+
+    pending->Until = now + watchMs;
+    creature->m_Events.AddEvent(new CorpseSparkleCheckEvent(creature), creature->m_Events.CalculateTime(CorpseSparkleCheckEvent::CheckIntervalMs));
+}
 
 // Event to handle the actual looting after the pet reaches the corpse
 class PetLootEvent : public BasicEvent
@@ -195,6 +282,9 @@ public:
             // flag changes. Resend it so players with nothing left to take
             // (the rest is rolling or belongs to someone else) lose it.
             victim->ForceValuesUpdateAtIndex(UNIT_DYNAMIC_FLAGS);
+
+            if (HasRollingItem(victim->loot))
+                ScheduleSparkleCheck(victim);
         }
 
         // Pet returns to player
@@ -235,25 +325,19 @@ public:
         ProcessPetLoot(petOwner, victim);
     }
 
-    // The core hands out a won roll straight from the corpse but only clears
-    // the sparkle for chests. Normally someone opens the empty corpse and
-    // that clears it; with the pet looting nobody does, so the corpse keeps
-    // sparkling with nothing inside.
-    void OnPlayerGroupRollRewardItem(Player* player, Item* /*item*/, uint32 /*count*/, RollVote /*voteType*/, Roll* roll) override
+    // A player (usually a bot) opening the corpse is what starts the group
+    // rolls when no pet got there first.
+    void OnPlayerBeforeSendLoot(Player* player, ObjectGuid lootGuid, Loot* loot) override
     {
-        if (!PetLootConfig::instance()->Enabled || !player || !roll)
+        if (!PetLootConfig::instance()->Enabled || !player || !loot || !lootGuid.IsCreatureOrVehicle())
             return;
 
-        Loot* loot = roll->getLoot();
-        if (!loot || !loot->isLooted() || loot->sourceGameObject || !loot->sourceWorldObjectGUID.IsCreature())
+        if (!HasRollingItem(*loot))
             return;
 
-        Creature* creature = player->GetMap()->GetCreature(loot->sourceWorldObjectGUID);
-        if (!creature || creature->IsAlive() || !creature->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE))
-            return;
-
-        creature->RemoveDynamicFlag(UNIT_DYNFLAG_LOOTABLE);
-        creature->AllLootRemovedFromCorpse();
+        if (Creature* creature = player->GetMap()->GetCreature(lootGuid))
+            if (!creature->IsAlive())
+                ScheduleSparkleCheck(creature);
     }
 
 private:
