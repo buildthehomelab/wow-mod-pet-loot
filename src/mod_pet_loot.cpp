@@ -148,6 +148,16 @@ public:
         if (pet->GetMap() != player->GetMap())
             return true;
 
+        // Only a body that still sparkles. It may have respawned or been
+        // emptied in the second it took the pet to get there. Skinning loot
+        // is the skinner's alone, and pickpocket loot isn't the pet's either.
+        if (victim->IsAlive() || !victim->HasDynamicFlag(UNIT_DYNFLAG_LOOTABLE)
+            || victim->loot.loot_type == LOOT_SKINNING || victim->loot.loot_type == LOOT_PICKPOCKETING)
+        {
+            pet->GetMotionMaster()->MoveFollow(player, 1.0f, 0.0f);
+            return true;
+        }
+
         pet->HandleEmoteCommand(EMOTE_ONESHOT_LOOT);
 
         // The core fills corpse loot when the creature dies. Empty loot means
@@ -159,8 +169,11 @@ public:
         bool lootInitialized = victim->loot.loot_type != LOOT_NONE;
 
         // Mark corpse loot as already initialized,
-        // otherwise manual looting will start group rolls again.
-        victim->loot.loot_type = LOOT_CORPSE;
+        // otherwise manual looting will start group rolls again. Keep a
+        // type that's already set: achievements count loot by it, and a
+        // body opened as fishing loot (a caught fish) must stay fishing.
+        if (!lootInitialized)
+            victim->loot.loot_type = LOOT_CORPSE;
 
         Group* group = player->GetGroup();
         LootMethod lootMethod = group ? group->GetLootMethod() : FREE_FOR_ALL;
