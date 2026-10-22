@@ -25,7 +25,11 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - A player with a non-combat pet summoned (or the pet set in `PetLoot.PetId`).
 
 ## Installation
-1. Place the `mod-pet-loot` directory into your `modules/` folder.
+1. Clone the repo into your AzerothCore `modules/` folder as `mod-pet-loot` (the repo is `wow-mod-pet-loot`):
+
+   ```
+   git clone https://github.com/buildthehomelab/wow-mod-pet-loot.git mod-pet-loot
+   ```
 2. Recompile your AzerothCore project.
 3. Apply the SQL file provided in the `sql/` directory (if not done automatically).
 4. Copy `conf/mod_pet_loot.conf.dist` to `conf/mod_pet_loot.conf`.
@@ -35,6 +39,10 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - `PetLoot.Enable`: Enable/Disable the module.
 - `PetLoot.PetId`: The NPC ID of the looting pet. `0` lets any non-combat pet loot (default: 0).
 - `PetLoot.Radius`: Maximum distance for looting (default: 50.0 yards).
+
+## Credits
+
+Forked from [BlaMacfly/mod-pet-loot](https://github.com/BlaMacfly/mod-pet-loot), the original module.
 
 ## License
 Released under the [GNU AGPL v3 license](LICENSE).
