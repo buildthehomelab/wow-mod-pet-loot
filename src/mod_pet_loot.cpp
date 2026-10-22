@@ -16,6 +16,8 @@
 #include "Timer.h"
 #include "WorldSession.h"
 
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 // Configuration class to store module settings
@@ -52,6 +54,72 @@ static bool HasRollingItem(Loot const& loot)
             return true;
 
     return false;
+}
+
+// Bots are sessions without a socket. AzerothCore marks them with WorldSession::IsHeadless();
+// older playerbots core forks have WorldSession::IsBot() instead, and older stock cores have
+// neither. Looking for both at compile time lets the module build on all of them.
+template <typename Session, typename = void>
+struct HasIsHeadless : std::false_type { };
+
+template <typename Session>
+struct HasIsHeadless<Session, std::void_t<decltype(std::declval<Session&>().IsHeadless())>> : std::true_type { };
+
+template <typename Session, typename = void>
+struct HasIsBot : std::false_type { };
+
+template <typename Session>
+struct HasIsBot<Session, std::void_t<decltype(std::declval<Session&>().IsBot())>> : std::true_type { };
+
+template <typename Session>
+static bool IsBotSession(Session* session)
+{
+    if constexpr (HasIsHeadless<Session>::value)
+        return session->IsHeadless();
+    else if constexpr (HasIsBot<Session>::value)
+        return session->IsBot();
+    else
+        return false;
+}
+
+// The loot window's rule for who may take an item (see Loot's permission views), which
+// StoreLootItem doesn't check: under round robin, and for items below the loot threshold
+// under group, need-before-greed and master loot, the item belongs to the round-robin
+// looter until they release the corpse. A roll winner whose bags were full keeps theirs too.
+// A bot's turn is left to the pets: bots are there to help the players, and a bot that never
+// opens the corpse would hold its turn until the corpse despawns.
+static bool BelongsToSomeoneElse(Player* player, Loot const& loot, LootItem const& item)
+{
+    // Free-for-all and conditional (quest) items go to anyone they're for.
+    if (item.freeforall || !item.conditions.empty())
+        return false;
+
+    if (item.rollWinnerGUID && item.rollWinnerGUID != player->GetGUID())
+        return true;
+
+    if (!loot.roundRobinPlayer || loot.roundRobinPlayer == player->GetGUID())
+        return false;
+
+    if (Player* turn = ObjectAccessor::FindConnectedPlayer(loot.roundRobinPlayer))
+        if (turn->GetSession() && IsBotSession(turn->GetSession()))
+            return false;
+
+    // Left the group since the kill: the turn is still someone else's.
+    Group* group = player->GetGroup();
+    if (!group)
+        return true;
+
+    switch (group->GetLootMethod())
+    {
+        case ROUND_ROBIN:
+            return true;
+        case GROUP_LOOT:
+        case NEED_BEFORE_GREED:
+        case MASTER_LOOT:
+            return item.is_underthreshold;
+        default:
+            return false;
+    }
 }
 
 // Marks a corpse that already has a CorpseSparkleCheckEvent queued
@@ -277,6 +345,9 @@ public:
             // Skip items allocated to other players (round-robin / master loot).
             const AllowedLooterSet& allowed = lootItem.GetAllowedLooters();
             if (!allowed.empty() && !allowed.count(player->GetGUID()))
+                continue;
+
+            if (BelongsToSomeoneElse(player, victim->loot, lootItem))
                 continue;
 
             InventoryResult msg;
