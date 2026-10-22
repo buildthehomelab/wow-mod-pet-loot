@@ -31,9 +31,8 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
    git clone https://github.com/buildthehomelab/wow-mod-pet-loot.git mod-pet-loot
    ```
 2. Recompile your AzerothCore project.
-3. Apply the SQL file provided in the `sql/` directory (if not done automatically).
-4. Copy `conf/mod_pet_loot.conf.dist` to `conf/mod_pet_loot.conf`.
-5. Enjoy!
+3. Copy `conf/mod_pet_loot.conf.dist` to `conf/mod_pet_loot.conf`.
+4. Enjoy!
 
 ## Configuration
 - `PetLoot.Enable`: Enable/Disable the module.
