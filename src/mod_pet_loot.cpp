@@ -54,6 +54,38 @@ static bool HasRollingItem(Loot const& loot)
     return false;
 }
 
+// The loot window's rule for who may take an item (see Loot's permission views), which
+// StoreLootItem doesn't check: under round robin, and for items below the loot threshold
+// under group, need-before-greed and master loot, the item belongs to the round-robin
+// looter until they release the corpse. A roll winner whose bags were full keeps theirs too.
+static bool BelongsToSomeoneElse(Player* player, Loot const& loot, LootItem const& item)
+{
+    if (item.freeforall)
+        return false;
+
+    if (item.rollWinnerGUID && item.rollWinnerGUID != player->GetGUID())
+        return true;
+
+    if (!loot.roundRobinPlayer || loot.roundRobinPlayer == player->GetGUID())
+        return false;
+
+    Group* group = player->GetGroup();
+    if (!group)
+        return false;
+
+    switch (group->GetLootMethod())
+    {
+        case ROUND_ROBIN:
+            return true;
+        case GROUP_LOOT:
+        case NEED_BEFORE_GREED:
+        case MASTER_LOOT:
+            return item.is_underthreshold;
+        default:
+            return false;
+    }
+}
+
 // Marks a corpse that already has a CorpseSparkleCheckEvent queued
 struct SparkleCheckPending : DataMap::Base
 {
@@ -277,6 +309,9 @@ public:
             // Skip items allocated to other players (round-robin / master loot).
             const AllowedLooterSet& allowed = lootItem.GetAllowedLooters();
             if (!allowed.empty() && !allowed.count(player->GetGUID()))
+                continue;
+
+            if (BelongsToSomeoneElse(player, victim->loot, lootItem))
                 continue;
 
             InventoryResult msg;
