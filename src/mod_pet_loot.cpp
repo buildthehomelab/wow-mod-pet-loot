@@ -6,12 +6,18 @@
 #include "Player.h"
 #include "Config.h"
 #include "Chat.h"
+#include "ChatCommand.h"
 #include "Creature.h"
+#include "DatabaseEnv.h"
+#include "DBCStores.h"
 #include "LootMgr.h"
 #include "ObjectAccessor.h"
 #include "Group.h"
 #include "Map.h"
 #include "Opcodes.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
+#include "TemporarySummon.h"
 #include "WorldPacket.h"
 #include "Timer.h"
 #include "WorldSession.h"
@@ -19,6 +25,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+using namespace Acore::ChatCommands;
 
 // Configuration class to store module settings
 class PetLootConfig
@@ -33,14 +41,59 @@ public:
     bool Enabled;
     uint32 PetId;
     float Radius;
+    bool AutoSummon;
 
     void Load()
     {
         Enabled = sConfigMgr->GetOption<bool>("PetLoot.Enable", true);
         PetId = sConfigMgr->GetOption<uint32>("PetLoot.PetId", 0); // 0 = any non-combat pet
         Radius = sConfigMgr->GetOption<float>("PetLoot.Radius", 50.0f);
+        AutoSummon = sConfigMgr->GetOption<bool>("PetLoot.AutoSummon.Enable", true);
     }
 };
+
+// The companion a player picked with .companion auto. Only players who have
+// picked one get this, so bots and everyone else skip the update check.
+struct AutoSummonData : DataMap::Base
+{
+    uint32 SpellId = 0;
+    uint32 CheckTimer = 0;
+    // Dismissed by hand: stay away until the player summons a companion again
+    bool Paused = false;
+    // Set from a command this session, so the login load is older
+    bool Chosen = false;
+};
+
+static constexpr char const* AutoSummonKey = "PetLootAutoSummon";
+static constexpr uint32 AutoSummonCheckMs = 2000;
+
+// Companion spells summon a SUMMON_TYPE_MINIPET creature
+static bool IsCompanionSpell(SpellInfo const* spellInfo)
+{
+    for (SpellEffectInfo const& effect : spellInfo->GetEffects())
+        if (effect.Effect == SPELL_EFFECT_SUMMON)
+            if (SummonPropertiesEntry const* properties = sSummonPropertiesStore.LookupEntry(effect.MiscValueB))
+                if (properties->Type == SUMMON_TYPE_MINIPET)
+                    return true;
+
+    return false;
+}
+
+static Creature* GetCompanion(Player* player)
+{
+    ObjectGuid critterGuid = player->GetCritterGUID();
+    return critterGuid ? ObjectAccessor::GetCreature(*player, critterGuid) : nullptr;
+}
+
+// Times a companion would be out of place or the summon would get in the way.
+// Taxis despawn companions; the next check after landing brings it back.
+static bool CanAutoSummon(Player* player)
+{
+    return player->IsAlive() && !player->IsInCombat() && !player->IsInFlight() && !player->IsFlying()
+        && !player->GetVehicle() && !player->IsBeingTeleported() && !player->IsNonMeleeSpellCast(false)
+        && !player->HasStealthAura() && !player->HasInvisibilityAura()
+        && !player->GetMap()->IsBattleArena();
+}
 
 // True while an item on the corpse waits on a group roll or the master looter
 static bool HasRollingItem(Loot const& loot)
@@ -424,6 +477,67 @@ public:
                 ScheduleSparkleCheck(creature);
     }
 
+    void OnPlayerLogin(Player* player) override
+    {
+        WorldSession* session = player->GetSession();
+        if (IsBotSession(session))
+            return;
+
+        ObjectGuid const guid = player->GetGUID();
+        session->GetQueryProcessor().AddCallback(CharacterDatabase.AsyncQuery(Acore::StringFormat(
+            "SELECT `spell` FROM `mod_pet_loot_autosummon` WHERE `guid` = {}", guid.GetCounter()))
+            .WithCallback([session, guid](QueryResult result)
+            {
+                Player* player = session->GetPlayer();
+                if (!player || player->GetGUID() != guid || !result)
+                    return;
+
+                AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
+                if (data->Chosen)
+                    return;
+
+                data->SpellId = result->Fetch()[0].Get<uint32>();
+                data->CheckTimer = AutoSummonCheckMs;
+            }));
+    }
+
+    void OnPlayerUpdate(Player* player, uint32 diff) override
+    {
+        AutoSummonData* data = player->CustomData.Get<AutoSummonData>(AutoSummonKey);
+        if (!data || !data->SpellId)
+            return;
+
+        if (data->CheckTimer > diff)
+        {
+            data->CheckTimer -= diff;
+            return;
+        }
+
+        data->CheckTimer = AutoSummonCheckMs;
+
+        PetLootConfig* config = PetLootConfig::instance();
+        if (!config->Enabled || !config->AutoSummon)
+            return;
+
+        // Any companion counts, so one the player summoned themselves stays out
+        if (GetCompanion(player))
+        {
+            data->Paused = false;
+            return;
+        }
+
+        if (data->Paused || !CanAutoSummon(player) || !player->HasSpell(data->SpellId))
+            return;
+
+        // Triggered: no cast bar or global cooldown, and it doesn't dismount
+        player->CastSpell(player, data->SpellId, TRIGGERED_FULL_MASK);
+    }
+
+    void OnPlayerDelete(ObjectGuid guid, uint32 /*accountId*/) override
+    {
+        CharacterDatabase.Execute("DELETE FROM `mod_pet_loot_autosummon` WHERE `guid` = {}", guid.GetCounter());
+    }
+
 private:
     // The killer is often a party member (in dungeons usually a bot), so
     // check every group member's pet, not just the killer's.
@@ -483,8 +597,144 @@ private:
     }
 };
 
+// Dismissing the companion by hand means the player wants it gone, so
+// auto-summon waits until they call one out again.
+class PetLootServerScript : public ServerScript
+{
+public:
+    PetLootServerScript() : ServerScript("PetLootServerScript", { SERVERHOOK_CAN_PACKET_RECEIVE }) { }
+
+    bool CanPacketReceive(WorldSession* session, WorldPacket const& packet) override
+    {
+        if (packet.GetOpcode() != CMSG_DISMISS_CRITTER)
+            return true;
+
+        if (Player* player = session->GetPlayer())
+            if (AutoSummonData* data = player->CustomData.Get<AutoSummonData>(AutoSummonKey))
+                data->Paused = true;
+
+        return true;
+    }
+};
+
+class PetLootCommandScript : public CommandScript
+{
+public:
+    PetLootCommandScript() : CommandScript("PetLootCommandScript") { }
+
+    ChatCommandTable GetCommands() const override
+    {
+        static ChatCommandTable companionCommandTable =
+        {
+            { "auto", HandleAutoCommand,   SEC_PLAYER, Console::No },
+            { "off",  HandleOffCommand,    SEC_PLAYER, Console::No },
+            { "",     HandleStatusCommand, SEC_PLAYER, Console::No }
+        };
+
+        static ChatCommandTable commandTable =
+        {
+            { "companion", companionCommandTable }
+        };
+
+        return commandTable;
+    }
+
+    // .companion auto [companion link]: without a link, the companion out now
+    static bool HandleAutoCommand(ChatHandler* handler, Optional<SpellInfo const*> spell)
+    {
+        if (!CheckEnabled(handler))
+            return false;
+
+        Player* player = handler->GetPlayer();
+        SpellInfo const* spellInfo = spell ? *spell : nullptr;
+
+        if (!spellInfo)
+        {
+            Creature* companion = GetCompanion(player);
+            if (!companion)
+            {
+                handler->SendErrorMessage("Summon the companion you want first, or shift-click it from your Companions tab: .companion auto [Companion]");
+                return false;
+            }
+
+            spellInfo = sSpellMgr->GetSpellInfo(companion->GetUInt32Value(UNIT_CREATED_BY_SPELL));
+        }
+
+        if (!spellInfo || !IsCompanionSpell(spellInfo))
+        {
+            handler->SendErrorMessage("That isn't a companion.");
+            return false;
+        }
+
+        if (!player->HasSpell(spellInfo->Id))
+        {
+            handler->SendErrorMessage("You don't have that companion.");
+            return false;
+        }
+
+        AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
+        data->SpellId = spellInfo->Id;
+        data->Chosen = true;
+        data->Paused = false;
+        data->CheckTimer = 0;
+
+        CharacterDatabase.Execute("REPLACE INTO `mod_pet_loot_autosummon` (`guid`, `spell`) VALUES ({}, {})",
+            player->GetGUID().GetCounter(), spellInfo->Id);
+
+        handler->PSendSysMessage("{} will now come out on its own whenever you have no companion. Type .companion off to stop.",
+            spellInfo->SpellName[handler->GetSessionDbcLocale()]);
+        return true;
+    }
+
+    static bool HandleOffCommand(ChatHandler* handler)
+    {
+        if (!CheckEnabled(handler))
+            return false;
+
+        Player* player = handler->GetPlayer();
+        AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
+        data->SpellId = 0;
+        data->Chosen = true;
+
+        CharacterDatabase.Execute("DELETE FROM `mod_pet_loot_autosummon` WHERE `guid` = {}", player->GetGUID().GetCounter());
+
+        handler->SendSysMessage("Auto-summon is off. Your companion stays where you leave it.");
+        return true;
+    }
+
+    static bool HandleStatusCommand(ChatHandler* handler)
+    {
+        if (!CheckEnabled(handler))
+            return false;
+
+        AutoSummonData* data = handler->GetPlayer()->CustomData.Get<AutoSummonData>(AutoSummonKey);
+        SpellInfo const* spellInfo = data && data->SpellId ? sSpellMgr->GetSpellInfo(data->SpellId) : nullptr;
+
+        if (spellInfo)
+            handler->PSendSysMessage("Auto-summon: {}. Type .companion off to stop, or .companion auto to pick another.",
+                spellInfo->SpellName[handler->GetSessionDbcLocale()]);
+        else
+            handler->SendSysMessage("Auto-summon is off. Summon a companion and type .companion auto to have it come out on its own.");
+
+        return true;
+    }
+
+private:
+    static bool CheckEnabled(ChatHandler* handler)
+    {
+        PetLootConfig* config = PetLootConfig::instance();
+        if (config->Enabled && config->AutoSummon)
+            return true;
+
+        handler->SendErrorMessage("Companion auto-summon is turned off on this realm.");
+        return false;
+    }
+};
+
 void Addmod_pet_lootScripts()
 {
     new PetLootWorldScript();
     new PetLootPlayerScript();
+    new PetLootServerScript();
+    new PetLootCommandScript();
 }
