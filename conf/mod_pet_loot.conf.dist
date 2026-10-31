@@ -30,3 +30,13 @@ PetLoot.PetId = 0
 #        Default:     50.0
 
 PetLoot.Radius = 50.0
+
+#
+#    PetLoot.AutoSummon.Enable
+#        Description: Let players pick a companion that comes out on its own whenever they
+#                     have none (after login, zoning, death, flights). Players pick it with
+#                     .companion auto and stop it with .companion off.
+#        Default:     1 - (Enabled)
+#                     0 - (Disabled)
+
+PetLoot.AutoSummon.Enable = 1

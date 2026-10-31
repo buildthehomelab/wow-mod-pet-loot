@@ -18,6 +18,7 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - **Group Loot Support**: Fully respects AzerothCore group loot rules (Free For All, Group Loot, Need Before Greed, Master Loot, Round-Robin). The pet automatically triggers the appropriate loot system exactly once, shares gold correctly between nearby group members, and leaves active loot rolls and master-loot distributions fully managed by the core.
 - **Safe Group Roll Handling**: Prevents duplicate Need/Greed or Master Loot rolls when players manually open the corpse after the pet has already initialized the loot.
 - **No Empty Sparkles**: Once a group roll ends, the corpse stops sparkling for anyone with nothing left to take, including after disenchant wins and items mailed to a full-bagged winner.
+- **Auto-Summon**: Pick a companion with `.companion auto` and it comes out on its own whenever you have none: after logging in, zoning, dying or a flight. See [Auto-summon](#auto-summon).
 - **Configurable**: You can enable/disable the module, change the Pet ID, and adjust the looting radius via the config file.
 
 ## Requirements
@@ -38,6 +39,16 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - `PetLoot.Enable`: Enable/Disable the module.
 - `PetLoot.PetId`: The NPC ID of the looting pet. `0` lets any non-combat pet loot (default: 0).
 - `PetLoot.Radius`: Maximum distance for looting (default: 50.0 yards).
+- `PetLoot.AutoSummon.Enable`: Let players pick an auto-summoned companion (default: 1).
+
+## Auto-summon
+- `.companion auto`: the companion you have out now comes back on its own whenever you have none.
+- `.companion auto [Companion]`: pick one without summoning it; shift-click it from the Companions tab to put the link in chat.
+- `.companion off`: stop.
+- `.companion`: show which one is picked.
+- With the [Journal](https://github.com/buildthehomelab/wow-mod-forever-journal) addon, the Pets tab has an **Auto-summon** box that does the same.
+
+The pick is saved per character. The companion is summoned up to 2 seconds after it's needed, but not in combat, on a taxi or a flying mount, in a vehicle, while stealthed or invisible, while casting, or in an arena. Dismissing it by hand keeps it away until you summon any companion yourself or log in again. A companion you summon yourself is never replaced.
 
 ## Credits
 
