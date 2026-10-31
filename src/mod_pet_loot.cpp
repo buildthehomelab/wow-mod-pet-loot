@@ -17,11 +17,13 @@
 #include "Opcodes.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "StringConvert.h"
 #include "TemporarySummon.h"
 #include "WorldPacket.h"
 #include "Timer.h"
 #include "WorldSession.h"
 
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -436,6 +438,53 @@ private:
     ObjectGuid _petGuid;
 };
 
+// The Journal addon's Pets tab whispers itself under this prefix: "G" asks for the pick,
+// "S:<spell>" picks one (0 = off). The answer is "A:<spell>" (0 = none), or "OFF" when the
+// realm has auto-summon turned off.
+static constexpr std::string_view AddonPrefix = "PETLOOT\t";
+
+static void SendAutoSummonState(Player* player)
+{
+    WorldSession* session = player->GetSession();
+    if (!session || IsBotSession(session))
+        return;
+
+    PetLootConfig* config = PetLootConfig::instance();
+    AutoSummonData* data = player->CustomData.Get<AutoSummonData>(AutoSummonKey);
+    std::string payload = !config->Enabled || !config->AutoSummon ? "OFF"
+        : Acore::StringFormat("A:{}", data ? data->SpellId : 0);
+
+    WorldPacket packet;
+    ChatHandler::BuildChatPacket(packet, CHAT_MSG_WHISPER, LANG_ADDON, player, player, std::string(AddonPrefix) + payload);
+    session->SendPacket(&packet);
+}
+
+// Picks the companion (nullptr = off) and saves it. Returns why it can't, or nullptr.
+static char const* SetAutoSummon(Player* player, SpellInfo const* spellInfo)
+{
+    if (spellInfo && !IsCompanionSpell(spellInfo))
+        return "That isn't a companion.";
+
+    if (spellInfo && !player->HasSpell(spellInfo->Id))
+        return "You don't have that companion.";
+
+    AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
+    data->SpellId = spellInfo ? spellInfo->Id : 0;
+    data->Chosen = true;
+    data->Paused = false;
+    data->CheckTimer = 0;
+
+    if (spellInfo)
+        CharacterDatabase.Execute("REPLACE INTO `mod_pet_loot_autosummon` (`guid`, `spell`) VALUES ({}, {})",
+            player->GetGUID().GetCounter(), spellInfo->Id);
+    else
+        CharacterDatabase.Execute("DELETE FROM `mod_pet_loot_autosummon` WHERE `guid` = {}", player->GetGUID().GetCounter());
+
+    // Keeps an open Journal in step with a pick made by command
+    SendAutoSummonState(player);
+    return nullptr;
+}
+
 class PetLootWorldScript : public WorldScript
 {
 public:
@@ -498,6 +547,9 @@ public:
 
                 data->SpellId = result->Fetch()[0].Get<uint32>();
                 data->CheckTimer = AutoSummonCheckMs;
+
+                // The Journal may have asked before this load finished
+                SendAutoSummonState(player);
             }));
     }
 
@@ -531,6 +583,28 @@ public:
 
         // Triggered: no cast bar or global cooldown, and it doesn't dismount
         player->CastSpell(player, data->SpellId, TRIGGERED_FULL_MASK);
+    }
+
+    // The Journal addon whispers itself; swallow those so they never show up as chat
+    bool OnPlayerCanUseChat(Player* player, uint32 /*type*/, uint32 lang, std::string& msg, Player* receiver) override
+    {
+        if (lang != LANG_ADDON || receiver != player || !msg.starts_with(AddonPrefix))
+            return true;
+
+        std::string_view request = std::string_view(msg).substr(AddonPrefix.size());
+        PetLootConfig* config = PetLootConfig::instance();
+        if (config->Enabled && config->AutoSummon && request.starts_with("S:"))
+        {
+            uint32 spellId = Acore::StringTo<uint32>(request.substr(2)).value_or(0);
+            if (!spellId)
+                SetAutoSummon(player, nullptr);
+            else if (SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId); !spellInfo || SetAutoSummon(player, spellInfo))
+                SendAutoSummonState(player); // refused: the box goes back to what's picked
+            return false;
+        }
+
+        SendAutoSummonState(player);
+        return false;
     }
 
     void OnPlayerDelete(ObjectGuid guid, uint32 /*accountId*/) override
@@ -660,26 +734,17 @@ public:
             spellInfo = sSpellMgr->GetSpellInfo(companion->GetUInt32Value(UNIT_CREATED_BY_SPELL));
         }
 
-        if (!spellInfo || !IsCompanionSpell(spellInfo))
+        if (!spellInfo)
         {
             handler->SendErrorMessage("That isn't a companion.");
             return false;
         }
 
-        if (!player->HasSpell(spellInfo->Id))
+        if (char const* error = SetAutoSummon(player, spellInfo))
         {
-            handler->SendErrorMessage("You don't have that companion.");
+            handler->SendErrorMessage(error);
             return false;
         }
-
-        AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
-        data->SpellId = spellInfo->Id;
-        data->Chosen = true;
-        data->Paused = false;
-        data->CheckTimer = 0;
-
-        CharacterDatabase.Execute("REPLACE INTO `mod_pet_loot_autosummon` (`guid`, `spell`) VALUES ({}, {})",
-            player->GetGUID().GetCounter(), spellInfo->Id);
 
         handler->PSendSysMessage("{} will now come out on its own whenever you have no companion. Type .companion off to stop.",
             spellInfo->SpellName[handler->GetSessionDbcLocale()]);
@@ -691,12 +756,7 @@ public:
         if (!CheckEnabled(handler))
             return false;
 
-        Player* player = handler->GetPlayer();
-        AutoSummonData* data = player->CustomData.GetDefault<AutoSummonData>(AutoSummonKey);
-        data->SpellId = 0;
-        data->Chosen = true;
-
-        CharacterDatabase.Execute("DELETE FROM `mod_pet_loot_autosummon` WHERE `guid` = {}", player->GetGUID().GetCounter());
+        SetAutoSummon(handler->GetPlayer(), nullptr);
 
         handler->SendSysMessage("Auto-summon is off. Your companion stays where you leave it.");
         return true;

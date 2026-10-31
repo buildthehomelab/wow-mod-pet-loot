@@ -46,6 +46,7 @@ It lets any summoned non-combat (vanity) pet act as an immersive auto-loot assis
 - `.companion auto [Companion]`: pick one without summoning it; shift-click it from the Companions tab to put the link in chat.
 - `.companion off`: stop.
 - `.companion`: show which one is picked.
+- With the [Journal](https://github.com/buildthehomelab/wow-mod-forever-journal) addon, the Pets tab has an **Auto-summon** box that does the same.
 
 The pick is saved per character. The companion is summoned up to 2 seconds after it's needed, but not in combat, on a taxi or a flying mount, in a vehicle, while stealthed or invisible, while casting, or in an arena. Dismissing it by hand keeps it away until you summon any companion yourself or log in again. A companion you summon yourself is never replaced.
 
